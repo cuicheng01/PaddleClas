@@ -55,11 +55,9 @@ class Predictor(object):
             ) is False, "int8 mode is not supported for fp32 model inference, please set use_int8 as False during inference."
 
         # NOTE: paddle support to PIR mode after v2.6.0
-        pd_version = 0
-        for v in paddle.__version__.split(".")[:3]:
-            pd_version = 10 * pd_version + eval(v)
-
-        if pd_version == 0 or pd_version >= 260:
+        major_v, minor_v, _ = paddle.__version__.split(".")[:3]
+        major_v, minor_v = int(major_v), int(minor_v)
+        if (major_v == 0 and minor_v == 0) or (major_v >= 3):
             config = Config(inference_model_dir, model_prefix)
         else:
             model_file = os.path.join(inference_model_dir, f"{model_prefix}.pdmodel")
@@ -74,6 +72,22 @@ class Predictor(object):
             config.enable_xpu()
         elif args.get("use_mlu", False):
             config.enable_custom_device('mlu')
+        elif args.get("use_gcu", False):
+            assert paddle.device.is_compiled_with_custom_device("gcu"), (
+                "Config use_gcu cannot be set as True while your paddle "
+                "is not compiled with gcu! \nPlease try: \n"
+                "\t1. Install paddle-custom-gcu to run model on GCU. \n"
+                "\t2. Set use_gcu as False in config file to run model on CPU."
+            )
+            import paddle_custom_device.gcu.passes as gcu_passes
+            gcu_passes.setUp()
+            config.enable_custom_device("gcu")
+            config.enable_new_ir(True)
+            config.enable_new_executor(True)
+            kPirGcuPasses = gcu_passes.inference_passes(
+                use_pir=True, name="PaddleClas"
+            )
+            config.enable_custom_passes(kPirGcuPasses, True)
         else:
             config.disable_gpu()
             if args.enable_mkldnn:

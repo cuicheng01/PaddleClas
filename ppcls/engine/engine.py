@@ -15,12 +15,14 @@ from __future__ import division
 from __future__ import print_function
 
 import os
+import gc
 import shutil
 import copy
 import platform
 import paddle
 import paddle.distributed as dist
 from visualdl import LogWriter
+from packaging import version
 from paddle import nn
 import numpy as np
 import random
@@ -64,6 +66,10 @@ class Engine(object):
             self.is_rec = True
         else:
             self.is_rec = False
+        if self.config["Arch"].get("use_fused_attn", False):
+            if not self.config.get("AMP", {}).get("use_amp", False):
+                self.config["Arch"]["use_fused_attn"] = False
+                self.config["Arch"]["use_fused_linear"] = False
 
         # set seed
         seed = self.config["Global"].get("seed", False)
@@ -82,7 +88,7 @@ class Engine(object):
 
         # init train_func and eval_func
         assert self.eval_mode in [
-            "classification", "retrieval", "adaface"
+            "classification", "retrieval", "adaface", "face_recognition"
         ], logger.error("Invalid eval mode: {}".format(self.eval_mode))
         if self.train_mode is None:
             self.train_epoch_func = train_method.train_epoch
@@ -104,7 +110,8 @@ class Engine(object):
 
         # set device
         assert self.config["Global"]["device"] in [
-            "cpu", "gpu", "xpu", "npu", "mlu", "ascend", "intel_gpu", "mps"
+            "cpu", "gpu", "xpu", "npu", "mlu", "dcu", "ascend", "intel_gpu",
+            "mps", "gcu", "iluvatar_gpu", "metax_gpu"
         ]
         self.device = paddle.set_device(self.config["Global"]["device"])
         logger.info('train with paddle {} and device {}'.format(
@@ -155,7 +162,9 @@ class Engine(object):
 
         if self.mode == "eval" or (self.mode == "train" and
                                    self.config["Global"]["eval_during_train"]):
-            if self.eval_mode in ["classification", "adaface"]:
+            if self.eval_mode in [
+                    "classification", "adaface", "face_recognition"
+            ]:
                 self.eval_dataloader = build_dataloader(
                     self.config["DataLoader"], "Eval", self.device,
                     self.use_dali)
@@ -222,13 +231,15 @@ class Engine(object):
                 else:
                     metric_config = [{"name": "Recallk", "topk": (1, 5)}]
                 self.eval_metric_func = build_metrics(metric_config)
+            elif self.eval_mode == "face_recognition":
+                if "Metric" in self.config and "Eval" in self.config["Metric"]:
+                    self.eval_metric_func = build_metrics(self.config["Metric"][
+                        "Eval"])
         else:
             self.eval_metric_func = None
 
         # build model
         self.model = build_model(self.config, self.mode)
-        # set @to_static for benchmark, skip this by default.
-        apply_to_static(self.config, self.model, is_rec=self.is_rec)
 
         # load_pretrain
         if self.config["Global"]["pretrained_model"] is not None:
@@ -250,6 +261,9 @@ class Engine(object):
         if self.ema:
             self.model_ema = ExponentialMovingAverage(
                 self.model, self.config['EMA'].get("decay", 0.9999))
+
+        # set @to_static for benchmark, skip this by default.
+        apply_to_static(self.config, self.model, is_rec=self.is_rec)
 
         # check the gpu num
         world_size = dist.get_world_size()
@@ -407,10 +421,12 @@ class Engine(object):
                         save_path = os.path.join(self.output_dir, prefix,
                                                  "inference")
                         self.export(save_path, uniform_output_enabled)
+                        gc.collect()
                         if self.ema:
                             ema_save_path = os.path.join(
                                 self.output_dir, prefix, "inference_ema")
                             self.export(ema_save_path, uniform_output_enabled)
+                            gc.collect()
                         update_train_results(
                             self.config, prefix, metric_info, ema=self.ema)
                         save_load.save_model_info(metric_info, self.output_dir,
@@ -436,10 +452,12 @@ class Engine(object):
                     save_path = os.path.join(self.output_dir, prefix,
                                              "inference")
                     self.export(save_path, uniform_output_enabled)
+                    gc.collect()
                     if self.ema:
                         ema_save_path = os.path.join(self.output_dir, prefix,
                                                      "inference_ema")
                         self.export(ema_save_path, uniform_output_enabled)
+                        gc.collect()
                     update_train_results(
                         self.config,
                         prefix,
@@ -464,10 +482,12 @@ class Engine(object):
             if uniform_output_enabled:
                 save_path = os.path.join(self.output_dir, prefix, "inference")
                 self.export(save_path, uniform_output_enabled)
+                gc.collect()
                 if self.ema:
                     ema_save_path = os.path.join(self.output_dir, prefix,
                                                  "inference_ema")
                     self.export(ema_save_path, uniform_output_enabled)
+                    gc.collect()
                 save_load.save_model_info(metric_info, self.output_dir, prefix)
                 self.model.train()
 
@@ -570,6 +590,14 @@ class Engine(object):
         else:
             save_path = os.path.join(save_path, "inference")
 
+        if self.config["Global"].get("export_for_fd",
+                                     False) or uniform_output_enabled:
+            dst_path = os.path.join(os.path.dirname(save_path), 'inference.yml')
+            if not os.path.exists(os.path.dirname(dst_path)):
+                os.makedirs(os.path.dirname(dst_path))
+            dump_infer_config(self.config, dst_path,
+                              self.config["Global"]["image_shape"])
+
         model = paddle.jit.to_static(
             model,
             input_spec=[
@@ -577,16 +605,35 @@ class Engine(object):
                     shape=[None] + self.config["Global"]["image_shape"],
                     dtype='float32')
             ])
+
         if hasattr(model.base_model,
                    "quanter") and model.base_model.quanter is not None:
             model.base_model.quanter.save_quantized_model(model,
                                                           save_path + "_int8")
         else:
-            paddle.jit.save(model, save_path)
-        if self.config["Global"].get("export_for_fd",
-                                     False) or uniform_output_enabled:
-            dst_path = os.path.join(os.path.dirname(save_path), 'inference.yml')
-            dump_infer_config(self.config, dst_path)
+            paddle_version = version.parse(paddle.__version__)
+            if self.config["Global"].get("export_with_pir", False):
+                assert (paddle_version >= version.parse('3.0.0b2') or
+                        paddle_version == version.parse('0.0.0')
+                        ) and os.environ.get("FLAGS_enable_pir_api",
+                                             None) not in ["0", "False"]
+                paddle.jit.save(model, save_path)
+            else:
+                if paddle_version >= version.parse(
+                        '3.0.0b2') or paddle_version == version.parse('0.0.0'):
+                    model.forward.rollback()
+                    with paddle.pir_utils.OldIrGuard():
+                        model = paddle.jit.to_static(
+                            model,
+                            input_spec=[
+                                paddle.static.InputSpec(
+                                    shape=[None] +
+                                    self.config["Global"]["image_shape"],
+                                    dtype='float32')
+                            ])
+                        paddle.jit.save(model, save_path)
+                else:
+                    paddle.jit.save(model, save_path)
         logger.info(
             f"Export succeeded! The inference model exported has been saved in \"{save_path}\"."
         )
@@ -603,7 +650,7 @@ class Engine(object):
             self.auto_cast = AutoCast(use_amp)
             self.scaler = build_scaler(use_amp)
         else:
-            AMP_RELATED_FLAGS_SETTING = {'FLAGS_max_inplace_grad_add': 8, }
+            AMP_RELATED_FLAGS_SETTING = {}
             if paddle.is_compiled_with_cuda():
                 AMP_RELATED_FLAGS_SETTING.update({
                     'FLAGS_cudnn_batchnorm_spatial_persistent': 1

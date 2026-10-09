@@ -92,7 +92,7 @@ def main(args):
 
     # assign the device
     assert global_config["device"] in [
-        "cpu", "gpu", "xpu", "npu", "mlu", "ascend", "intel_gpu", "mps"
+        "cpu", "gpu", "xpu", "npu", "mlu", "dcu", "ascend", "intel_gpu", "mps", "gcu"
     ]
     device = paddle.set_device(global_config["device"])
 
@@ -104,7 +104,6 @@ def main(args):
             'FLAGS_cudnn_exhaustive_search': 1,
             'FLAGS_conv_workspace_size_limit': 1500,
             'FLAGS_cudnn_batchnorm_spatial_persistent': 1,
-            'FLAGS_max_inplace_grad_add': 8,
         }
         os.environ['FLAGS_cudnn_batchnorm_spatial_persistent'] = '1'
         paddle.set_flags(AMP_RELATED_FLAGS_SETTING)

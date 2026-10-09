@@ -46,7 +46,7 @@ logger.init_logger()
 
 __all__ = ["PaddleClas"]
 
-BASE_DIR = os.path.expanduser("~/.paddleclas/")
+BASE_DIR = os.path.expanduser(os.path.join("~", ".paddleclas"))
 BASE_INFERENCE_MODEL_DIR = os.path.join(BASE_DIR, "inference_model")
 BASE_IMAGES_DIR = os.path.join(BASE_DIR, "images")
 IMN_MODEL_BASE_DOWNLOAD_URL = "https://paddle-imagenet-models-name.bj.bcebos.com/dygraph/inference/{}_infer.tar"
@@ -190,6 +190,27 @@ IMN_MODEL_SERIES = {
     "Xception": [
         "Xception41", "Xception41_deeplab", "Xception65", "Xception65_deeplab",
         "Xception71"
+    ],
+    "EfficientViT":[
+        "efficientvit_b0.r224_in1k",
+        "efficientvit_b1.r224_in1k",
+        "efficientvit_b1.r256_in1k",
+        "efficientvit_b1.r288_in1k",
+        "efficientvit_b2.r224_in1k",
+        "efficientvit_b2.r256_in1k",
+        "efficientvit_b2.r288_in1k",
+        "efficientvit_b3.r224_in1k",
+        "efficientvit_b3.r256_in1k",
+        "efficientvit_b3.r288_in1k",
+        "efficientvit_l1.r224_in1k",
+        "efficientvit_l2.r224_in1k",
+        "efficientvit_l2.r256_in1k",
+        "efficientvit_l2.r288_in1k",
+        "efficientvit_l2.r384_in1k",
+        "efficientvit_l3.r224_in1k",
+        "efficientvit_l3.r256_in1k",
+        "efficientvit_l3.r320_in1k",
+        "efficientvit_l3.r384_in1k"
     ]
 }
 
